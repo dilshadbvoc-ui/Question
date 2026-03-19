@@ -153,14 +153,13 @@ export async function POST(req: NextRequest) {
         });
 
     } catch (error: any) {
-        console.error('API Error details:', {
-            message: error.message,
-            stack: error.stack,
-            cause: error.cause
-        });
+        const errorDetails = error.message || 'Unknown error';
+        console.error('FULL API ERROR:', error);
         return NextResponse.json({ 
             error: 'Failed to generate content.', 
-            details: error.message || 'Unknown error'
+            details: errorDetails,
+            type: error.name,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         }, { status: 500 });
     }
 }
@@ -369,9 +368,9 @@ async function extractTopics(subject: string, course: string, specialisation: st
     ${syllabusText.substring(0, 5000)}
     """` : ''}
     
-    Identify the 3-5 most important and distinct topics or chapters that should be included in a comprehensive study guide.
+    Identify the 2-3 most important and distinct topics or chapters that should be included in a comprehensive study guide.
     Return a JSON object with a key "topics", which is an array of strings.
-    Example: { "topics": ["Introduction to Logic", "First-Order Logic", "Proof Systems"] }
+    Example: { "topics": ["Introduction to Logic", "First-Order Logic"] }
     `;
 
     console.log(`[Generate API] extractTopics: calling Groq...`);
