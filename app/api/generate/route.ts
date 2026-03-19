@@ -55,6 +55,21 @@ export async function POST(req: NextRequest) {
 
         if (!process.env.GROQ_API_KEY) {
             console.warn('No GROQ_API_KEY found. Returning mock data.');
+            
+            if (mode === 'notes') {
+                const mockNotes = [
+                    { title: 'Mock Topic 1', content: 'This is mock content for topic 1. Please set GROQ_API_KEY for real results.' },
+                    { title: 'Mock Topic 2', content: 'This is mock content for topic 2. **Bold text** should work.' }
+                ];
+                const mockBuffer = await generateDocxBuffer(subject, mockNotes);
+                return new NextResponse(new Blob([new Uint8Array(mockBuffer)]), {
+                    headers: {
+                        'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        'Content-Disposition': `attachment; filename="${subject}_Mock_Notes.docx"`,
+                    },
+                });
+            }
+
             const isBalanced = format === 'balanced' || format === 'adeeb_balanced' || format === 'adeeb_mahir_balanced';
             const count = (format === '80mcq' || format === 'adeeb' || format === 'adeeb-e-mahir') ? 80 : (isBalanced ? 55 : 100);
             const mockQuestions: QuestionItem[] = generateMockQuestions(count, format);
@@ -78,11 +93,12 @@ export async function POST(req: NextRequest) {
 
             const docBuffer = await generateDocxBuffer(subject, combinedNotes);
             
+            const safeSubject = subject.replace(/[^a-z0-9]/gi, '_');
             return new NextResponse(new Blob([new Uint8Array(docBuffer)]), {
                 status: 200,
                 headers: {
                     'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    'Content-Disposition': `attachment; filename="${subject}_Study_Notes.docx"`,
+                    'Content-Disposition': `attachment; filename="${safeSubject}_Study_Notes.docx"`,
                 },
             });
         }
