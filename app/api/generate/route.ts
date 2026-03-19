@@ -8,8 +8,9 @@ import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } fro
 
 // Initialize Groq API
 const groq = new Groq({
-    apiKey: process.env.GROQ_API_KEY || '',
+    apiKey: (process.env.GROQ_API_KEY || '').trim(),
 });
+const MODEL_NAME = 'llama3-70b-8192'; // Using super stable model
 
 interface QuestionItem {
     type: 'MCQ' | 'SHORT' | 'LONG';
@@ -33,6 +34,8 @@ export async function POST(req: NextRequest) {
         const difficulty = (formData.get('difficulty') as string) || 'medium';
         const mode = (formData.get('mode') as string) || 'paper';
         const syllabusFile = formData.get('syllabus') as File | null;
+        
+        console.log(`[Generate API] Mode: ${mode}, API Key present: ${!!process.env.GROQ_API_KEY}`);
 
         let syllabusText = '';
         if (syllabusFile) {
@@ -82,19 +85,24 @@ export async function POST(req: NextRequest) {
             });
         }
 
+        console.log(`[Generate API] Step: Extracting topics...`);
         if (mode === 'notes') {
             const topics = await extractTopics(subject, course, specialisation, language, syllabusText);
+            console.log(`[Generate API] Topics found: ${topics.length}`);
             let combinedNotes: { title: string; content: string }[] = [];
             
             for (const topic of topics) {
+                console.log(`[Generate API] Generating for topic: ${topic}`);
                 const topicContent = await generateNotesForTopic(topic, subject, course, specialisation, language, difficulty, syllabusText);
                 combinedNotes.push({ title: topic, content: topicContent });
             }
 
+            console.log(`[Generate API] Generating DOCX buffer...`);
             const docBuffer = await generateDocxBuffer(subject, combinedNotes);
             
             const safeSubject = subject.replace(/[^a-z0-9]/gi, '_');
-            return new NextResponse(new Blob([new Uint8Array(docBuffer)]), {
+            console.log(`[Generate API] Success. Returning DOCX.`);
+            return new Response(new Uint8Array(docBuffer), {
                 status: 200,
                 headers: {
                     'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -142,9 +150,16 @@ export async function POST(req: NextRequest) {
             },
         });
 
-    } catch (error) {
-        console.error('API Error:', error);
-        return NextResponse.json({ error: 'Failed to generate questions.' }, { status: 500 });
+    } catch (error: any) {
+        console.error('API Error details:', {
+            message: error.message,
+            stack: error.stack,
+            cause: error.cause
+        });
+        return NextResponse.json({ 
+            error: 'Failed to generate content.', 
+            details: error.message || 'Unknown error'
+        }, { status: 500 });
     }
 }
 
@@ -231,10 +246,11 @@ async function generateBatch(
         ]`}
         `;
 
+        console.log(`[Generate API] generateBatch: calling Groq for ${type}...`);
         try {
             const chatCompletion = await groq.chat.completions.create({
                 messages: [{ role: 'user', content: prompt }],
-                model: 'llama-3.1-8b-instant',
+                model: MODEL_NAME,
                 temperature: 0.7,
                 response_format: { type: 'json_object' }
             });
@@ -351,14 +367,15 @@ async function extractTopics(subject: string, course: string, specialisation: st
     ${syllabusText.substring(0, 5000)}
     """` : ''}
     
-    Identify the 5-7 most important and distinct topics or chapters that should be included in a comprehensive study guide.
+    Identify the 3-5 most important and distinct topics or chapters that should be included in a comprehensive study guide.
     Return a JSON object with a key "topics", which is an array of strings.
     Example: { "topics": ["Introduction to Logic", "First-Order Logic", "Proof Systems"] }
     `;
 
+    console.log(`[Generate API] extractTopics: calling Groq...`);
     const chatCompletion = await groq.chat.completions.create({
         messages: [{ role: 'user', content: prompt }],
-        model: 'llama-3.3-70b-versatile',
+        model: MODEL_NAME,
         temperature: 0.3,
         response_format: { type: "json_object" }
     });
@@ -366,7 +383,8 @@ async function extractTopics(subject: string, course: string, specialisation: st
     try {
         const content = chatCompletion.choices[0]?.message?.content || '{"topics": []}';
         const parsed = JSON.parse(content);
-        return Array.isArray(parsed) ? parsed : (parsed.topics || []);
+        const topics = Array.isArray(parsed) ? parsed : (parsed.topics || []);
+        return topics.length > 0 ? topics : [subject];
     } catch {
         return [subject]; // Fallback to subject as single topic
     }
@@ -394,7 +412,7 @@ async function generateNotesForTopic(topic: string, subject: string, course: str
 
     const chatCompletion = await groq.chat.completions.create({
         messages: [{ role: 'user', content: prompt }],
-        model: 'llama-3.3-70b-versatile',
+        model: MODEL_NAME,
         temperature: 0.7,
     });
 
