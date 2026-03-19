@@ -6,6 +6,8 @@ import * as pdf from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx';
 
+export const maxDuration = 60; // 1 minute timeout for Vercel (if supported)
+
 // Initialize Groq API
 const groq = new Groq({
     apiKey: (process.env.GROQ_API_KEY || '').trim(),
@@ -89,13 +91,13 @@ export async function POST(req: NextRequest) {
         if (mode === 'notes') {
             const topics = await extractTopics(subject, course, specialisation, language, syllabusText);
             console.log(`[Generate API] Topics found: ${topics.length}`);
-            let combinedNotes: { title: string; content: string }[] = [];
             
-            for (const topic of topics) {
-                console.log(`[Generate API] Generating for topic: ${topic}`);
-                const topicContent = await generateNotesForTopic(topic, subject, course, specialisation, language, difficulty, syllabusText);
-                combinedNotes.push({ title: topic, content: topicContent });
-            }
+            // Generate all topics in parallel for Vercel performance
+            const topicPromises = topics.map(topic => 
+                generateNotesForTopic(topic, subject, course, specialisation, language, difficulty, syllabusText)
+                .then(content => ({ title: topic, content }))
+            );
+            const combinedNotes = await Promise.all(topicPromises);
 
             console.log(`[Generate API] Generating DOCX buffer...`);
             const docBuffer = await generateDocxBuffer(subject, combinedNotes);
