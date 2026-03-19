@@ -27,6 +27,12 @@ interface QuestionItem {
 
 export async function POST(req: NextRequest) {
     console.log(`[Generate API] Request started...`);
+    
+    // Diagnostic check for Vercel reachability
+    if (req.nextUrl.searchParams.get('ping') === 'true') {
+        return NextResponse.json({ status: 'ok', timestamp: new Date().toISOString(), hasKey: !!process.env.GROQ_API_KEY });
+    }
+
     try {
         const contentType = req.headers.get('content-type') || '';
         if (!contentType.includes('multipart/form-data')) {
@@ -368,9 +374,9 @@ async function extractTopics(subject: string, course: string, specialisation: st
     ${syllabusText.substring(0, 5000)}
     """` : ''}
     
-    Identify the 2-3 most important and distinct topics or chapters that should be included in a comprehensive study guide.
+    Identify the 2 most important and distinct topics or chapters that should be included in a comprehensive study guide.
     Return a JSON object with a key "topics", which is an array of strings.
-    Example: { "topics": ["Introduction to Logic", "First-Order Logic"] }
+    Example: { "topics": ["Major Concept 1", "Major Concept 2"] }
     `;
 
     console.log(`[Generate API] extractTopics: calling Groq...`);
