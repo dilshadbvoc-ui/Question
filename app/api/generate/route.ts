@@ -26,51 +26,63 @@ interface QuestionItem {
 }
 
 export async function POST(req: NextRequest) {
+    console.log(`[Generate API] Request started...`);
     try {
+        const contentType = req.headers.get('content-type') || '';
+        if (!contentType.includes('multipart/form-data')) {
+            return NextResponse.json({ error: 'Invalid content type. Expected multipart/form-data.' }, { status: 400 });
+        }
+
         const formData = await req.formData();
-        const course = formData.get('course') as string;
-        const specialisation = formData.get('specialisation') as string;
-        const subject = formData.get('subject') as string;
-        const format = formData.get('format') as string;
-        const language = formData.get('language') as string;
+        const course = formData.get('course') as string || 'General';
+        const subject = formData.get('subject') as string || 'General Study';
+        const specialisation = formData.get('specialisation') as string || '';
+        const format = formData.get('format') as string || '100mcq';
+        const language = formData.get('language') as string || 'English';
         const difficulty = (formData.get('difficulty') as string) || 'medium';
         const mode = (formData.get('mode') as string) || 'paper';
         const syllabusFile = formData.get('syllabus') as File | null;
         
-        console.log(`[Generate API] Mode: ${mode}, API Key present: ${!!process.env.GROQ_API_KEY}`);
+        console.log(`[Generate API] Mode: ${mode}, Subject: ${subject}, API Key present: ${!!process.env.GROQ_API_KEY}`);
 
         let syllabusText = '';
-        if (syllabusFile) {
-            const bytes = await syllabusFile.arrayBuffer();
-            const buffer = Buffer.from(bytes);
-            
-            if (syllabusFile.name.endsWith('.pdf')) {
-                const parsePdf = (pdf as any).default || pdf;
-                const pdfData = await parsePdf(buffer);
-                syllabusText = pdfData.text;
-            } else if (syllabusFile.name.endsWith('.docx')) {
-                const result = await mammoth.extractRawText({ buffer });
-                syllabusText = result.value;
-            } else if (syllabusFile.name.endsWith('.doc')) {
-                // Basic attempt for .doc files (though usually requires antiword)
-                // For now, let's just treat it as text if possible, or warn
-                syllabusText = "Note: Legacy .doc file uploaded. Content extraction may be limited.";
+        if (syllabusFile && syllabusFile.size > 0) {
+            try {
+                const bytes = await syllabusFile.arrayBuffer();
+                const buffer = Buffer.from(bytes);
+                
+                if (syllabusFile.name.endsWith('.pdf')) {
+                    const parsePdf = (pdf as any).default || pdf;
+                    if (typeof parsePdf === 'function') {
+                        const pdfData = await parsePdf(buffer);
+                        syllabusText = pdfData.text || '';
+                    } else {
+                        console.warn('pdf-parse is not a function after import');
+                        syllabusText = "Note: PDF extraction failed due to library compatibility.";
+                    }
+                } else if (syllabusFile.name.endsWith('.docx')) {
+                    const result = await mammoth.extractRawText({ buffer });
+                    syllabusText = result.value || '';
+                }
+            } catch (err: any) {
+                console.error('File parsing error:', err.message);
+                syllabusText = `Error reading syllabus: ${err.message}`;
             }
         }
 
-        if (!process.env.GROQ_API_KEY) {
+        if (!process.env.GROQ_API_KEY || (process.env.GROQ_API_KEY || '').trim() === '') {
             console.warn('No GROQ_API_KEY found. Returning mock data.');
             
             if (mode === 'notes') {
                 const mockNotes = [
-                    { title: 'Mock Topic 1', content: 'This is mock content for topic 1. Please set GROQ_API_KEY for real results.' },
+                    { title: 'Mock Topic 1', content: 'This is mock content for topic 1. Please set GROQ_API_KEY in Vercel environment variables.' },
                     { title: 'Mock Topic 2', content: 'This is mock content for topic 2. **Bold text** should work.' }
                 ];
                 const mockBuffer = await generateDocxBuffer(subject, mockNotes);
-                return new NextResponse(new Blob([new Uint8Array(mockBuffer)]), {
+                return new NextResponse(new Uint8Array(mockBuffer), {
                     headers: {
                         'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                        'Content-Disposition': `attachment; filename="${subject}_Mock_Notes.docx"`,
+                        'Content-Disposition': `attachment; filename="${subject.replace(/[^a-z0-9]/gi, '_')}_Mock_Notes.docx"`,
                     },
                 });
             }
@@ -79,32 +91,31 @@ export async function POST(req: NextRequest) {
             const count = (format === '80mcq' || format === 'adeeb' || format === 'adeeb-e-mahir') ? 80 : (isBalanced ? 55 : 100);
             const mockQuestions: QuestionItem[] = generateMockQuestions(count, format);
             const mockBuffer = generateExcelBuffer(mockQuestions);
-            return new NextResponse(new Blob([mockBuffer as any]), {
+            return new NextResponse(new Uint8Array(mockBuffer), {
                 headers: {
                     'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    'Content-Disposition': `attachment; filename="${subject}_${format}_questions.xlsx"`,
+                    'Content-Disposition': `attachment; filename="${subject.replace(/[^a-z0-9]/gi, '_')}_${format}_questions.xlsx"`,
                 },
             });
         }
 
-        console.log(`[Generate API] Step: Extracting topics...`);
+        console.log(`[Generate API] Step: AI Generation starting...`);
         if (mode === 'notes') {
             const topics = await extractTopics(subject, course, specialisation, language, syllabusText);
             console.log(`[Generate API] Topics found: ${topics.length}`);
             
-            // Generate all topics in parallel for Vercel performance
+            // Generate all topics in parallel for speed
             const topicPromises = topics.map(topic => 
                 generateNotesForTopic(topic, subject, course, specialisation, language, difficulty, syllabusText)
                 .then(content => ({ title: topic, content }))
             );
             const combinedNotes = await Promise.all(topicPromises);
 
-            console.log(`[Generate API] Generating DOCX buffer...`);
+            console.log(`[Generate API] Formatting DOCX...`);
             const docBuffer = await generateDocxBuffer(subject, combinedNotes);
             
             const safeSubject = subject.replace(/[^a-z0-9]/gi, '_');
-            console.log(`[Generate API] Success. Returning DOCX.`);
-            return new Response(new Uint8Array(docBuffer), {
+            return new NextResponse(new Uint8Array(docBuffer), {
                 status: 200,
                 headers: {
                     'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -113,53 +124,42 @@ export async function POST(req: NextRequest) {
             });
         }
 
+        // Question Paper Logic
         let allQuestions: QuestionItem[] = [];
-
         if (format === 'balanced' || format === 'adeeb_balanced' || format === 'adeeb_mahir_balanced') {
-            // Balanced Format: 48 MCQ (1 mark) + 5 Short (4 marks) + 2 Long (6 marks)
-
-            // 1. Generate 48 MCQs
-            const mcqs = await generateBatch(48, 'MCQ', subject, course, specialisation, language, difficulty, syllabusText);
-            allQuestions = [...allQuestions, ...mcqs];
-
-            // 2. Generate 5 Short questions
-            const shortQ = await generateBatch(5, 'SHORT', subject, course, specialisation, language, difficulty, syllabusText);
-            allQuestions = [...allQuestions, ...shortQ];
-
-            // 3. Generate 2 Long questions
-            const longQ = await generateBatch(2, 'LONG', subject, course, specialisation, language, difficulty, syllabusText);
-            allQuestions = [...allQuestions, ...longQ];
-
+            const [mcqs, shortQ, longQ] = await Promise.all([
+                generateBatch(48, 'MCQ', subject, course, specialisation, language, difficulty, syllabusText),
+                generateBatch(5, 'SHORT', subject, course, specialisation, language, difficulty, syllabusText),
+                generateBatch(2, 'LONG', subject, course, specialisation, language, difficulty, syllabusText)
+            ]);
+            allQuestions = [...mcqs, ...shortQ, ...longQ];
         } else if (format === '80mcq' || format === 'adeeb' || format === 'adeeb-e-mahir') {
-            // 80 MCQ Format
             allQuestions = await generateBatch(80, 'MCQ', subject, course, specialisation, language, difficulty, syllabusText);
         } else {
-            // Standard Format: 100 MCQs
             allQuestions = await generateBatch(100, 'MCQ', subject, course, specialisation, language, difficulty, syllabusText);
         }
 
         if (allQuestions.length === 0) {
-            throw new Error('Failed to generate any questions.');
+            throw new Error('No questions were generated.');
         }
 
-        const buffer = generateExcelBuffer(allQuestions);
+        const excelBuffer = generateExcelBuffer(allQuestions);
+        const safeSubject = subject.replace(/[^a-z0-9]/gi, '_');
 
-        return new NextResponse(new Blob([buffer as any]), {
+        return new NextResponse(new Uint8Array(excelBuffer), {
             status: 200,
             headers: {
                 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'Content-Disposition': `attachment; filename="${subject}_${format}_questions.xlsx"`,
+                'Content-Disposition': `attachment; filename="${safeSubject}_${format}_questions.xlsx"`,
             },
         });
 
     } catch (error: any) {
-        const errorDetails = error.message || 'Unknown error';
-        console.error('FULL API ERROR:', error);
+        console.error('CRITICAL API ERROR:', error.message, error.stack);
         return NextResponse.json({ 
-            error: 'Failed to generate content.', 
-            details: errorDetails,
-            type: error.name,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            error: 'Server Generation Failed', 
+            details: error.message || 'Unknown server error',
+            type: error.name
         }, { status: 500 });
     }
 }
